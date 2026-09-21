@@ -2,11 +2,11 @@
 
 A from-scratch, synthesizable VHDL implementation of the AES-128 block cipher, built as an FPGA project to explore hardware datapath design, finite state machines, and the tradeoffs between latency and throughput in digital design.
 
-This repository currently contains the **sequential** version of the core: a single round-logic datapath reused across 10 clock cycles per block. A **pipelined** version, built to maximize throughput by processing multiple blocks concurrently, is in progress — see the Roadmap section below.
+This repository currently contains the **sequential** version of the core (`aes_module.vhd`): a single round-logic datapath reused across 10 clock cycles per block. A **pipelined** version, built to maximize throughput by processing multiple blocks concurrently, is in progress — see the Roadmap section below.
 
 ## Overview
 
-`aes_module_sequential.vhd` implements AES-128 encryption end-to-end: key expansion, and the full 10-round encryption pipeline (SubBytes, ShiftRows, MixColumns, AddRoundKey), driven by a finite state machine.
+`aes_module.vhd` implements AES-128 encryption end-to-end: key expansion, and the full 10-round encryption pipeline (SubBytes, ShiftRows, MixColumns, AddRoundKey), driven by a finite state machine.
 
 - **Block size:** 128 bits
 - **Key size:** 128 bits (AES-128, 10 rounds)
@@ -65,7 +65,7 @@ All arithmetic in this step is field addition (XOR) and field multiplication by 
 
 ## Verification
 
-The design is verified in simulation against the official AES-128 test vector published in FIPS-197 (plaintext `00112233445566778899aabbccddeeff`, key `000102030405060708090a0b0c0d0e0f`, expected ciphertext `69c4e0d86a7b0430d8cdb78070b4c55a`), via a dedicated testbench (`aes_module_tb.vhd`).
+The design is verified in simulation against the official AES-128 test vector published in FIPS-197 (plaintext `00112233445566778899aabbccddeeff`, key `000102030405060708090a0b0c0d0e0f`, expected ciphertext `69c4e0d86a7b0430d8cdb78070b4c55a`), via a dedicated testbench (`AES_tb.vhd`).
 
 ## Roadmap
 
@@ -77,5 +77,5 @@ The design is verified in simulation against the official AES-128 test vector pu
 
 | File | Description |
 |---|---|
-| `aes_module_sequential.vhd` | Sequential AES-128 encryption core |
-| `aes_module_tb.vhd` | Testbench, verified against the FIPS-197 test vector |
+| `aes_module.vhd` | Sequential AES-128 encryption core |
+| `AES_tb.vhd` | Testbench, verified against the FIPS-197 test vector |
