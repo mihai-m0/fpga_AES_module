@@ -118,8 +118,6 @@ This confirms correct operation end-to-end: host software → UART transmission 
 - [x] Fully pipelined AES-128 core (10 concurrent pipeline stages, 1 block/cycle sustained throughput after pipeline fill)
 - [x] UART host interface and top-level integration
 - [x] Verified on real hardware (Nexys A7-100T) against the FIPS-197 test vector
-- [ ] On-chip cycle-accurate throughput measurement (removing UART as the bottleneck)
-- [ ] LED visualization of pipeline occupancy (multiple in-flight blocks shown simultaneously)
 
 ## Files
 
