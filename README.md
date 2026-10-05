@@ -1,23 +1,22 @@
-# AES-128 in VHDL — Sequential Implementation
+# AES-128 in VHDL — Sequential and Pipelined Implementations
 
-A from-scratch, synthesizable VHDL implementation of the AES-128 block cipher, built as an FPGA project to explore hardware datapath design, finite state machines, and the tradeoffs between latency and throughput in digital design.
+A from-scratch, synthesizable VHDL implementation of the AES-128 block cipher, built as an FPGA project to explore hardware datapath design, finite state machines, and the tradeoffs between latency and throughput in digital design. Verified both in simulation and on real hardware (Digilent Nexys A7-100T), driven over a UART link from a host PC.
 
-This repository currently contains the **sequential** version of the core (`aes_module.vhd`): a single round-logic datapath reused across 10 clock cycles per block. A **pipelined** version, built to maximize throughput by processing multiple blocks concurrently, is in progress — see the Roadmap section below.
+The repository contains two encryption cores — a **sequential** version (one round of logic, reused across 10 clock cycles) and a **pipelined** version (ten physical copies of the round logic, operating on ten different blocks simultaneously) — plus the UART infrastructure used to exercise the design on actual silicon.
 
 ## Overview
 
-`aes_module.vhd` implements AES-128 encryption end-to-end: key expansion, and the full 10-round encryption pipeline (SubBytes, ShiftRows, MixColumns, AddRoundKey), driven by a finite state machine.
-
 - **Block size:** 128 bits
 - **Key size:** 128 bits (AES-128, 10 rounds)
-- **Architecture:** round-based FSM, one round of the cipher executed per clock cycle
-- **Interface:** synchronous, `start`-triggered, single in-flight block at a time
+- **Two core architectures**, sharing the same key schedule, S-box, and round-transform logic:
+  - `aes_module.vhd` — sequential, FSM-driven, one round per clock cycle, one block in flight at a time
+  - `aes_module_pipelined.vhd` — fully pipelined, ten blocks in flight simultaneously once the pipeline is full
+- **Host interface:** UART (9600 baud, 8N1), via `receiver.vhd` / `transmitter.vhd` and a top-level glue module (`aes_uart_top.vhd`)
+- **Verified on hardware:** Nexys A7-100T, encrypting the official FIPS-197 test vector end-to-end over a serial link
 
-## Architecture
+## Architecture — Sequential Core (`aes_module.vhd`)
 
-### Finite State Machine
-
-The core is driven by a 4-state FSM:
+Driven by a 4-state FSM:
 
 ```
 idle → round_0 → round_i (×10, one round per clock cycle) → done → idle
@@ -27,6 +26,22 @@ idle → round_0 → round_i (×10, one round per clock cycle) → done → idle
 - **`round_0`** — performs the initial `AddRoundKey` (plaintext XOR with the first round key), before any round transformations.
 - **`round_i`** — executes one full AES round per clock cycle (SubBytes → ShiftRows → MixColumns → AddRoundKey), tracked internally via a round counter. MixColumns is correctly omitted on the final (10th) round, per the AES specification.
 - **`done`** — latches the final ciphertext onto `encrypted_text` for one clock cycle before returning to `idle`.
+
+One block takes approximately 13 clock cycles from `start` to a valid `encrypted_text`. Only one block can be in flight at a time — a new block cannot begin until the previous one reaches `done`.
+
+## Architecture — Pipelined Core (`aes_module_pipelined.vhd`)
+
+Replaces the FSM entirely with an 11-stage register pipeline (`pipe_reg(0)` through `pipe_reg(10)`), each stage holding a 128-bit value and a `valid` bit:
+
+- **`pipe_reg(0)`** is loaded directly from `text_in xor round_key_0`, gated by `start`, whenever a new block enters.
+- **Stages 1 through 10** each instantiate the same combinational round-transform function (`aes_round`), reading the previous stage's register and writing their own on every clock edge. All ten stages execute in parallel, every cycle, each working on a different in-flight block.
+- **`encrypted_text`** / **`done_out`** are driven directly from `pipe_reg(10)` — no separate "done" state is needed, since a stage's `valid` bit traveling through the pipe is itself the completion signal.
+
+A new plaintext block can be accepted on every single clock cycle. After an initial ~11-cycle pipeline fill, a finished ciphertext is produced on every subsequent cycle — roughly a 13x throughput improvement over the sequential core, using the same round logic, replicated ten times in hardware rather than reused sequentially. This is a genuine latency-for-throughput trade: per-block latency is unchanged (still ~11 cycles through the pipe), but many blocks can be mid-flight simultaneously.
+
+Both cores share the same `s_box`, key-schedule (`g_func`, Rcon table), `xtime`/`mul3`/`mix_columns`, and `bytes_to_matrix`/`matrix_to_bytes` logic — only the control structure around the round transform differs.
+
+## Shared Building Blocks
 
 ### Key Expansion
 
@@ -57,25 +72,63 @@ Each column of the state is transformed via matrix multiplication in **GF(2⁸)*
 
 All arithmetic in this step is field addition (XOR) and field multiplication by small constants (1, 2, 3) — the same construction used in the AES reference specification (FIPS-197).
 
-## Design Notes
+## UART / Hardware Integration (`aes_uart_top.vhd`)
 
-- **Latency vs. throughput:** this implementation prioritizes simplicity and a shallow combinational path per clock cycle over raw throughput. One block takes approximately 13 clock cycles from `start` to a valid `encrypted_text` (1 cycle idle→round_0, 1 cycle round_0→round_i, 10 cycles for the round loop, 1 cycle to latch the result in `done`). Only one block can be in flight at a time.
-- **Variables vs. signals:** intermediate per-cycle computation (byte substitution, row shifting, column mixing) is performed using process **variables**, which update immediately within a process execution, avoiding the deferred-update pitfalls of signal assignments in sequential logic. Final results are written to **signals** exactly once per state, at the point they should become externally visible.
-- **Index convention:** all vectors use ascending (`0 to N`) ranges throughout, with index 0 as the most significant bit/byte, for consistency across the module.
+A top-level module wires the pipelined AES core to the board's USB-UART bridge, so the design can be exercised from a PC over a serial link rather than only in simulation:
+
+- **`receiver.vhd`** — a standard UART receiver: double-flops the incoming line for metastability protection, re-validates the start bit at mid-bit-period to reject glitches, samples each data bit at mid-bit-period, and pulses `valid` for one cycle per received byte.
+- **`transmitter.vhd`** — a standard UART transmitter: shifts a byte out start-bit/8-data-bits/stop-bit on request, pulsing `done` when the frame completes.
+- **Framing protocol:** the host sends the 16-byte key once, followed by one or more 16-byte plaintext blocks. Each complete plaintext block triggers the AES core; each finished ciphertext is streamed back out over UART, 16 bytes at a time.
+- **Baud rate:** 9600, derived from the Nexys A7's 100 MHz system clock (`tick_limit = 10417`).
+
+Note: UART at 9600 baud (~33 ms per 128-bit block transferred) is far slower than the pipelined core's internal throughput (one block per 10 ns at 100 MHz), so the serial link — not the AES core — is the bottleneck in this demonstration setup. The pipelined core's throughput advantage is a property of the core itself, measurable on-chip or relevant in any application where the core is fed at or near full clock speed, rather than through this UART interface.
 
 ## Verification
 
-The design is verified in simulation against the official AES-128 test vector published in FIPS-197 (plaintext `00112233445566778899aabbccddeeff`, key `000102030405060708090a0b0c0d0e0f`, expected ciphertext `69c4e0d86a7b0430d8cdb78070b4c55a`), via a dedicated testbench (`AES_tb.vhd`).
+### Simulation
+
+Both cores are verified in simulation against the official AES-128 test vector published in FIPS-197:
+
+- Plaintext: `00112233445566778899aabbccddeeff`
+- Key: `000102030405060708090a0b0c0d0e0f`
+- Expected ciphertext: `69c4e0d86a7b0430d8cdb78070b4c55a`
+
+via a dedicated testbench (`AES_tb.vhd`), which also exercises the pipelined core's streaming behavior by feeding multiple blocks back-to-back and confirming `done_out` holds for consecutive clock cycles once the pipeline fills.
+
+### Hardware
+
+The full system — pipelined AES core plus UART glue — was synthesized, implemented, and programmed onto a **Digilent Nexys A7-100T**, then exercised from a host PC using a Python (`pyserial`) script sending the same FIPS-197 key and plaintext bytes over the physical UART link.
+
+```
+Received:  69c4e0d86a7b0430d8cdb78070b4c55a
+Expected:  69c4e0d86a7b0430d8cdb78070b4c55a
+```
+
+This confirms correct operation end-to-end: host software → UART transmission → on-chip UART reception and framing → AES key schedule and pipelined encryption → UART transmission back → host software, entirely on real hardware.
+
+## Design Notes
+
+- **Variables vs. signals:** intermediate per-cycle computation (byte substitution, row shifting, column mixing) is performed using process **variables**, which update immediately within a process execution, avoiding the deferred-update pitfalls of signal assignments in sequential logic. Final results are written to **signals** exactly once per state/stage, at the point they should become externally visible.
+- **Index convention:** all vectors use ascending (`0 to N`) ranges throughout, with index 0 as the most significant bit/byte, for consistency across the module.
+- **Shared key, streamed blocks:** the pipelined core and UART framing both assume a single key is loaded once and reused across many plaintext blocks — the standard real-world AES usage pattern, and the one that makes pipelining meaningful in the first place.
 
 ## Roadmap
 
 - [x] Sequential AES-128 core (round-based FSM, 1 round/cycle)
-- [ ] Fully pipelined AES-128 core (10 concurrent pipeline stages, targeting 1 block/cycle sustained throughput after pipeline fill)
-- [ ] Throughput benchmarking on target FPGA
+- [x] Fully pipelined AES-128 core (10 concurrent pipeline stages, 1 block/cycle sustained throughput after pipeline fill)
+- [x] UART host interface and top-level integration
+- [x] Verified on real hardware (Nexys A7-100T) against the FIPS-197 test vector
+- [ ] On-chip cycle-accurate throughput measurement (removing UART as the bottleneck)
+- [ ] LED visualization of pipeline occupancy (multiple in-flight blocks shown simultaneously)
 
 ## Files
 
 | File | Description |
 |---|---|
 | `aes_module.vhd` | Sequential AES-128 encryption core |
-| `AES_tb.vhd` | Testbench, verified against the FIPS-197 test vector |
+| `aes_module_pipelined.vhd` | Pipelined AES-128 encryption core (10 concurrent stages) |
+| `aes_uart_top.vhd` | Top-level module: UART host interface wired to the pipelined AES core |
+| `receiver.vhd` | UART receiver |
+| `transmitter.vhd` | UART transmitter |
+| `AES_tb.vhd` | Testbench, verified against the FIPS-197 test vector (both cores) |
+| `Nexys-A7-100T-Master.xdc` | Board constraints (clock + UART pins only; all other I/O left unconstrained) |
