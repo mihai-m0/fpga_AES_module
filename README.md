@@ -4,6 +4,8 @@ A from-scratch, synthesizable VHDL implementation of the AES-128 block cipher, b
 
 The repository contains two encryption cores — a **sequential** version (one round of logic, reused across 10 clock cycles) and a **pipelined** version (ten physical copies of the round logic, operating on ten different blocks simultaneously) — plus the UART infrastructure used to exercise the design on actual silicon.
 
+![schematic](schematic.png)
+
 ## Overview
 
 - **Block size:** 128 bits
@@ -42,7 +44,7 @@ A new plaintext block can be accepted on every single clock cycle. After an init
 Both cores share the same `s_box`, key-schedule (`g_func`, Rcon table), `xtime`/`mul3`/`mix_columns`, and `bytes_to_matrix`/`matrix_to_bytes` logic — only the control structure around the round transform differs.
 
 ## Shared Building Blocks
-
+![Steps](steps.png)
 ### Key Expansion
 
 The 128-bit input key is expanded into 11 round keys (44 32-bit words total) using the standard AES key schedule, computed combinationally in a dedicated process:
@@ -50,6 +52,7 @@ The 128-bit input key is expanded into 11 round keys (44 32-bit words total) usi
 - **RotWord** — cyclic left-rotation of a 32-bit word by one byte.
 - **SubWord** — S-box substitution applied independently to each of the 4 bytes in a word.
 - **Rcon XOR** — the first byte of each transformed word is XORed with a round-dependent constant, generated from a precomputed round constant table (powers of `x` in GF(2⁸)).
+  ![Alt Text](round_key.png)
 
 ### S-box Substitution
 
@@ -111,3 +114,6 @@ This confirms correct operation end-to-end: host software → UART transmission 
 - **Variables vs. signals:** intermediate per-cycle computation (byte substitution, row shifting, column mixing) is performed using process **variables**, which update immediately within a process execution, avoiding the deferred-update pitfalls of signal assignments in sequential logic. Final results are written to **signals** exactly once per state/stage, at the point they should become externally visible.
 - **Index convention:** all vectors use ascending (`0 to N`) ranges throughout, with index 0 as the most significant bit/byte, for consistency across the module.
 - **Shared key, streamed blocks:** the pipelined core and UART framing both assume a single key is loaded once and reused across many plaintext blocks — the standard real-world AES usage pattern, and the one that makes pipelining meaningful in the first place.
+
+##References
+https://www.nesoacademy.org/cs/11-cryptography-and-network-security/03-block-cipher/12-aes-key-expansion
